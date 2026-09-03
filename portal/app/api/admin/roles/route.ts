@@ -1,0 +1,54 @@
+import { env } from 'cloudflare:workers';
+import { authenticateRequest, errorResponse, json } from '@/lib/auth';
+import { writeAudit } from '@/lib/audit';
+
+type RoleRow = {
+  id: number; name: string; slug: string; description: string; system_role: number;
+  permission_ids: string | null; permissions: string | null; user_count: number;
+};
+
+function mapRole(row: RoleRow) {
+  return {
+    id: row.id, name: row.name, slug: row.slug, description: row.description, systemRole: Boolean(row.system_role),
+    permissionIds: row.permission_ids ? row.permission_ids.split(',').map(Number) : [],
+    permissions: row.permissions ? row.permissions.split(',') : [], userCount: row.user_count,
+  };
+}
+
+export async function GET(request: Request) {
+  try {
+    await authenticateRequest(request, 'admin.roles.manage');
+    const [roles, permissions] = await Promise.all([
+      env.DB.prepare(`
+        SELECT r.id, r.name, r.slug, r.description, r.system_role,
+          GROUP_CONCAT(DISTINCT p.id) AS permission_ids, GROUP_CONCAT(DISTINCT p.name) AS permissions,
+          (SELECT COUNT(*) FROM user_roles ur2 WHERE ur2.role_id = r.id) AS user_count
+        FROM roles r LEFT JOIN role_permissions rp ON rp.role_id = r.id LEFT JOIN permissions p ON p.id = rp.permission_id
+        GROUP BY r.id ORDER BY r.system_role DESC, r.name ASC
+      `).all<RoleRow>(),
+      env.DB.prepare('SELECT id, key, name, description FROM permissions ORDER BY name').all(),
+    ]);
+    return json({ roles: roles.results.map(mapRole), permissions: permissions.results });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const actor = await authenticateRequest(request, 'admin.roles.manage');
+    const body = await request.json<{ name?: string; description?: string; permissionIds?: number[] }>();
+    const name = body.name?.trim() ?? '';
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (name.length < 2 || !slug) return json({ error: 'Enter a valid role name.' }, { status: 400 });
+    const existing = await env.DB.prepare('SELECT id FROM roles WHERE slug = ?').bind(slug).first();
+    if (existing) return json({ error: 'A role with this name already exists.' }, { status: 409 });
+    const role = await env.DB.prepare('INSERT INTO roles (name, slug, description, system_role) VALUES (?, ?, ?, 0) RETURNING id').bind(name, slug, body.description?.trim() ?? '').first<{ id: number }>();
+    const permissionIds = [...new Set(body.permissionIds ?? [])].filter(Number.isInteger);
+    if (role && permissionIds.length) await env.DB.batch(permissionIds.map((permissionId) => env.DB.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)').bind(role.id, permissionId)));
+    await writeAudit({ user: actor, action: 'role.create', resource: 'role', resourceId: role?.id, request, details: { name, permissionIds } });
+    return json({ id: role?.id }, { status: 201 });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}

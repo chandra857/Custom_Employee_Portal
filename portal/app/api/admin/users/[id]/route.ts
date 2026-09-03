@@ -1,0 +1,58 @@
+import { env } from 'cloudflare:workers';
+import { authenticateRequest, errorResponse, json } from '@/lib/auth';
+import { hashPassword } from '@/lib/auth-crypto';
+import { writeAudit } from '@/lib/audit';
+
+function numericId(value: string) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const actor = await authenticateRequest(request, 'admin.users.manage');
+    const id = numericId((await context.params).id);
+    if (!id) return json({ error: 'Invalid user id.' }, { status: 400 });
+    const body = await request.json<{ fullName?: string; department?: string; isActive?: boolean; roleIds?: number[]; password?: string }>();
+    const existing = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(id).first();
+    if (!existing) return json({ error: 'User not found.' }, { status: 404 });
+    if (id === actor.id && body.isActive === false) return json({ error: 'You cannot deactivate your own account.' }, { status: 400 });
+
+    const statements = [];
+    if (body.fullName?.trim()) statements.push(env.DB.prepare('UPDATE users SET full_name = ?, updated_at = unixepoch() WHERE id = ?').bind(body.fullName.trim(), id));
+    if (body.department?.trim()) statements.push(env.DB.prepare('UPDATE users SET department = ?, updated_at = unixepoch() WHERE id = ?').bind(body.department.trim(), id));
+    if (typeof body.isActive === 'boolean') statements.push(env.DB.prepare('UPDATE users SET is_active = ?, updated_at = unixepoch() WHERE id = ?').bind(body.isActive ? 1 : 0, id));
+    if (body.password) {
+      if (body.password.length < 8) return json({ error: 'Password must contain at least 8 characters.' }, { status: 400 });
+      const password = await hashPassword(body.password);
+      statements.push(env.DB.prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = unixepoch() WHERE id = ?').bind(password.hash, password.salt, id));
+    }
+    if (Array.isArray(body.roleIds)) {
+      statements.push(env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(id));
+      for (const roleId of [...new Set(body.roleIds)].filter(Number.isInteger)) statements.push(env.DB.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').bind(id, roleId));
+    }
+    if (statements.length) await env.DB.batch(statements);
+    if (body.isActive === false || body.password) await env.DB.prepare('UPDATE sessions SET revoked_at = unixepoch() WHERE user_id = ? AND revoked_at IS NULL').bind(id).run();
+    await writeAudit({ user: actor, action: 'user.update', resource: 'user', resourceId: id, request, details: { fields: Object.keys(body) } });
+    return json({ ok: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const actor = await authenticateRequest(request, 'admin.users.manage');
+    const id = numericId((await context.params).id);
+    if (!id) return json({ error: 'Invalid user id.' }, { status: 400 });
+    if (id === actor.id) return json({ error: 'You cannot remove your own account.' }, { status: 400 });
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET is_active = 0, updated_at = unixepoch() WHERE id = ?').bind(id),
+      env.DB.prepare('UPDATE sessions SET revoked_at = unixepoch() WHERE user_id = ? AND revoked_at IS NULL').bind(id),
+    ]);
+    await writeAudit({ user: actor, action: 'user.deactivate', resource: 'user', resourceId: id, request });
+    return json({ ok: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
