@@ -84,7 +84,7 @@ SQL migrations are stored in `portal/netlify/database/migrations` and are applie
 
 ## Deploy to Netlify
 
-The repository contains a root `netlify.toml` that selects `portal` as the base directory, runs `npm run build`, and publishes the Next.js output. Connect this GitHub repository to Netlify and deploy the `main` branch; no manual publish-directory override is required.
+The repository contains a root `netlify.toml` that selects `portal` as the base directory, runs `npm run build`, publishes the Next.js output, and explicitly enables Netlify's official Next.js adapter. Connect this GitHub repository to Netlify and deploy the `main` branch; no manual publish-directory override is required.
 
 The database migration generates and stores a random session-signing secret automatically. For centrally managed production secrets, you can override it with a `JWT_SECRET` environment variable containing at least 32 random characters. Add the `ZOHO_*` values from `portal/.env.example` only when enabling live Zoho OAuth.
 
