@@ -1,13 +1,18 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { SyntheticEvent } from 'react';
 import {
   Activity, ArrowRight, BadgeCheck, BookOpen, BriefcaseBusiness, Building2,
   CheckCircle2, ChevronRight, CircleUserRound, Clock3, Headphones, KeyRound, LayoutDashboard,
-  LockKeyhole, LogOut, Menu, MoreHorizontal, Pencil, Plus, RefreshCw, Search,
+  LifeBuoy, LockKeyhole, LogOut, Mail, Menu, MoreHorizontal, Pencil, Plus, RefreshCw, Search,
   ShieldCheck, ShieldEllipsis, Trash2, UserRoundPlus, UsersRound, X,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -24,6 +29,7 @@ type Role = { id: number; name: string; slug: string; description: string; syste
 type AuditLog = { id: number; actor_email: string | null; action: string; resource: string; resource_id: string | null; status: string; details: string; ip_address: string | null; created_at: number };
 type Overview = { activeUsers: number; roles: number; activeSessions: number; activity24h: number; integration: Session['integration'] };
 type View = 'home' | 'users' | 'roles' | 'activity';
+type NavigationItem = { key: View; label: string; description: string; icon: LucideIcon; show: boolean };
 
 const demoAccounts = [
   { label: 'Admin', email: 'admin@workplace.test' }, { label: 'HR', email: 'hr@workplace.test' },
@@ -50,6 +56,20 @@ function dateTime(unix: number | null) {
   return unix ? new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unix * 1000)) : 'Never';
 }
 
+async function launchService(service: Service, onNotice: (message: string) => void) {
+  const serviceWindow = window.open('about:blank', '_blank');
+  if (serviceWindow) serviceWindow.opener = null;
+  try {
+    const result = await api<{ url: string; mode: string; notice: string }>(`/api/zoho/${service.key}/launch`, { method: 'POST', body: '{}' });
+    if (serviceWindow) serviceWindow.location.replace(result.url);
+    else window.location.assign(result.url);
+    if (result.mode === 'demo') onNotice('Zoho opened. Native access still follows your Zoho sign-in or SSO policy.');
+  } catch (error) {
+    serviceWindow?.close();
+    onNotice(error instanceof Error ? error.message : 'Service could not be opened.');
+  }
+}
+
 export function PortalApp() {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
@@ -57,6 +77,7 @@ export function PortalApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [addUserOpen, setAddUserOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const refreshSession = useCallback(async () => {
     try { setSession(await api<Session>('/api/auth/me')); }
@@ -65,6 +86,18 @@ export function PortalApp() {
   }, []);
 
   useEffect(() => { void refreshSession(); }, [refreshSession]);
+
+  useEffect(() => {
+    if (!session) return;
+    const openSearch = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', openSearch);
+    return () => window.removeEventListener('keydown', openSearch);
+  }, [session]);
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: { registerTool: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> } }).modelContext;
@@ -99,11 +132,11 @@ export function PortalApp() {
   if (!session) return <Login onLogin={setSession} />;
 
   const isAdmin = session.user.permissions.includes('admin.users.manage');
-  const nav = [
-    { key: 'home' as const, label: 'My workspace', icon: LayoutDashboard, show: true },
-    { key: 'users' as const, label: 'Employees', icon: UsersRound, show: isAdmin },
-    { key: 'roles' as const, label: 'Roles & access', icon: ShieldEllipsis, show: session.user.permissions.includes('admin.roles.manage') },
-    { key: 'activity' as const, label: 'Audit activity', icon: Activity, show: session.user.permissions.includes('audit.read') },
+  const nav: NavigationItem[] = [
+    { key: 'home' as const, label: 'My workspace', description: 'Open your authorized Zoho services', icon: LayoutDashboard, show: true },
+    { key: 'users' as const, label: 'Employees', description: 'Manage employee accounts and roles', icon: UsersRound, show: isAdmin },
+    { key: 'roles' as const, label: 'Roles & access', description: 'Configure role permissions', icon: ShieldEllipsis, show: session.user.permissions.includes('admin.roles.manage') },
+    { key: 'activity' as const, label: 'Audit activity', description: 'Review security and access events', icon: Activity, show: session.user.permissions.includes('audit.read') },
   ].filter((item) => item.show);
 
   async function logout() {
@@ -133,7 +166,9 @@ export function PortalApp() {
       <main className="portal-main">
         <header className="portal-header">
           <button className="mobile-menu" onClick={() => setMenuOpen(true)} aria-label="Open navigation"><Menu /></button>
-          <div className="header-search"><Search /><span>Search your workspace</span><kbd>⌘ K</kbd></div>
+          <button type="button" className="header-search" onClick={() => setSearchOpen(true)} aria-haspopup="dialog">
+            <Search /><span>Search your workspace</span><kbd>Ctrl K</kbd>
+          </button>
           <div className="header-right"><span className={`connection ${session.integration.connected ? 'live' : ''}`}><i />{session.integration.connected ? 'Zoho connected' : 'Demo mode'}</span><span className="header-avatar">{initials(session.user.fullName)}</span></div>
         </header>
 
@@ -144,8 +179,73 @@ export function PortalApp() {
           {view === 'activity' && <AuditActivity />}
         </div>
       </main>
+      <WorkspaceSearchDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        items={nav}
+        services={session.services}
+        onSelect={(nextView) => { setView(nextView); setSearchOpen(false); setMenuOpen(false); }}
+        onLaunch={(service) => { setSearchOpen(false); void launchService(service, flash); }}
+      />
       {notice && <output className="toast-notice"><CheckCircle2 />{notice}</output>}
     </div>
+  );
+}
+
+function WorkspaceSearchDialog({ open, onOpenChange, items, services, onSelect, onLaunch }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  items: NavigationItem[];
+  services: Service[];
+  onSelect: (view: View) => void;
+  onLaunch: (service: Service) => void;
+}) {
+  const [query, setQuery] = useState('');
+  useEffect(() => { if (open) setQuery(''); }, [open]);
+  const normalizedQuery = query.trim().toLowerCase();
+  const pageMatches = useMemo(() => {
+    if (!normalizedQuery) return items;
+    return items.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(normalizedQuery));
+  }, [items, normalizedQuery]);
+  const serviceMatches = useMemo(() => {
+    if (!normalizedQuery) return services;
+    return services.filter((service) => `${service.name} ${service.purpose}`.toLowerCase().includes(normalizedQuery));
+  }, [normalizedQuery, services]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="workspace-search-dialog">
+        <DialogHeader>
+          <DialogTitle>Search your workspace</DialogTitle>
+          <DialogDescription>Find a portal area and go directly to it.</DialogDescription>
+        </DialogHeader>
+        <label className="workspace-search-input">
+          <Search aria-hidden="true" />
+          <span className="sr-only">Search portal areas</span>
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search workspace, employees, roles or activity"
+          />
+        </label>
+        <div className="workspace-search-results" aria-live="polite">
+          {pageMatches.length > 0 && <span className="search-group-label">Portal</span>}
+          {pageMatches.map(({ key, label, description, icon: Icon }) => (
+            <button type="button" key={key} onClick={() => onSelect(key)}>
+              <span className="search-result-icon"><Icon aria-hidden="true" /></span>
+              <span><b>{label}</b><small>{description}</small></span>
+              <ArrowRight aria-hidden="true" />
+            </button>
+          ))}
+          {serviceMatches.length > 0 && <span className="search-group-label">Applications</span>}
+          {serviceMatches.map((service) => {
+            const Icon = serviceIcons[service.key];
+            return <button type="button" key={service.key} onClick={() => onLaunch(service)}><span className="search-result-icon"><Icon aria-hidden="true" /></span><span><b>{service.name}</b><small>{service.purpose}</small></span><ArrowRight aria-hidden="true" /></button>;
+          })}
+          {!pageMatches.length && !serviceMatches.length && <div className="search-empty"><Search /><p>No results match “{query}”.</p></div>}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -159,6 +259,7 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
   const [remember, setRemember] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [helpOpen, setHelpOpen] = useState(false);
 
   async function submit(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError('');
@@ -191,34 +292,49 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
           <div><p className="eyebrow plain">EMPLOYEE PORTAL</p><h2 id="sign-in-title">Welcome back</h2><p className="form-intro">Sign in with your company portal credentials.</p></div>
           <div className="demo-accounts" aria-label="Demo accounts">{demoAccounts.map((account) => <button type="button" className={email === account.email ? 'selected' : ''} key={account.email} onClick={() => { setEmail(account.email); setPassword('Admin@123'); }}>{account.label}</button>)}</div>
           <div className="field-group"><label htmlFor="email">Work email</label><Input id="email" type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></div>
-          <div className="field-group"><div className="label-row"><label htmlFor="password">Password</label><button type="button">Forgot password?</button></div><Input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></div>
+          <div className="field-group"><div className="label-row"><label htmlFor="password">Password</label><button type="button" onClick={() => setHelpOpen(true)}>Forgot password?</button></div><Input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></div>
           <label className="remember-row"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /><span>Keep me signed in on this device</span></label>
           {error && <p className="login-error" role="alert">{error}</p>}
           <Button className="sign-in-button" size="lg" type="submit" disabled={busy}>{busy ? 'Checking access…' : 'Sign in to your workspace'} {!busy && <ArrowRight />}</Button>
           <div className="demo-note"><BadgeCheck /><p><b>Demo access is ready</b><span>All demo accounts use password Admin@123.</span></p></div>
         </form>
-        <footer>Need help? <button type="button">Contact your administrator</button></footer>
+        <footer>Need help? <button type="button" onClick={() => setHelpOpen(true)}>Contact your administrator</button></footer>
+        <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
       </section>
     </main>
   );
 }
 
+function HelpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="help-dialog">
+        <span className="help-icon"><LifeBuoy /></span>
+        <DialogHeader>
+          <DialogTitle>Password and sign-in help</DialogTitle>
+          <DialogDescription>
+            Your company administrator manages portal passwords and account access. Email IT support from your work account for a secure reset.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="help-contact"><Mail /><div><small>IT support</small><b>it-support@workplace.test</b></div></div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+          <a className="help-mail" href="mailto:it-support@workplace.test?subject=Workplace%20Hub%20sign-in%20help">Email IT support</a>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function Workspace({ session, onNotice }: { session: Session; onNotice: (message: string) => void }) {
   const user = session.user;
-  async function launch(service: Service) {
-    try {
-      const result = await api<{ url: string; mode: string; notice: string }>(`/api/zoho/${service.key}/launch`, { method: 'POST', body: '{}' });
-      window.open(result.url, '_blank', 'noopener,noreferrer');
-      if (result.mode === 'demo') onNotice('Zoho opened. Native access still follows your Zoho sign-in or SSO policy.');
-    } catch (error) { onNotice(error instanceof Error ? error.message : 'Service could not be opened.'); }
-  }
   return (
     <section>
       <div className="page-heading"><div><span className="page-kicker">MY WORKSPACE</span><h1>Good to see you, {user.fullName.split(' ')[0]}.</h1><p>These services are available through your assigned {user.roles.join(', ')} role{user.roles.length > 1 ? 's' : ''}.</p></div><div className="heading-date"><Clock3 /><span><small>Local time</small><b>{new Intl.DateTimeFormat('en-IN', { weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date())}</b></span></div></div>
       <div className="access-summary"><div className="summary-icon"><KeyRound /></div><div><span>YOUR ACCESS</span><b>{session.services.length} Zoho service{session.services.length === 1 ? '' : 's'} enabled</b></div><div className="summary-roles">{user.roles.map((role) => <Badge variant="outline" key={role}>{role}</Badge>)}</div><ShieldCheck className="summary-shield" /></div>
       <div className="section-title"><div><h2>Authorized applications</h2><p>Launch only the tools approved for your role.</p></div><span className="sync-time"><RefreshCw /> Permissions checked now</span></div>
       {session.services.length ? <div className="service-grid">{session.services.map((service) => { const Icon = serviceIcons[service.key]; return (
-        <article className={`app-card ${service.color}`} key={service.key}><div className="app-top"><span className="app-icon"><Icon /></span><span className="access-badge"><i /> Access granted</span></div><div className="app-copy"><span>ZOHO ONE</span><h3>{service.name}</h3><p>{service.purpose}</p></div><button onClick={() => launch(service)}>Open application <ArrowRight /></button></article>
+        <article className={`app-card ${service.color}`} key={service.key}><div className="app-top"><span className="app-icon"><Icon /></span><span className="access-badge"><i /> Access granted</span></div><div className="app-copy"><span>ZOHO ONE</span><h3>{service.name}</h3><p>{service.purpose}</p></div><button onClick={() => void launchService(service, onNotice)}>Open application <ArrowRight /></button></article>
       ); })}</div> : <div className="empty-state"><LockKeyhole /><h3>No services assigned</h3><p>Ask your administrator to add a Zoho permission to your role.</p></div>}
       <div className="security-note"><ShieldCheck /><div><b>Your Zoho credentials stay private</b><p>The portal validates every request against your current permissions. Backend API credentials are never sent to your browser.</p></div><span>{session.integration.connected ? 'LIVE CONNECTION' : 'SAFE DEMO MODE'}</span></div>
     </section>
@@ -228,30 +344,45 @@ function Workspace({ session, onNotice }: { session: Session; onNotice: (message
 function UsersAdmin({ addOpen, setAddOpen, onNotice }: { addOpen: boolean; setAddOpen: (open: boolean) => void; onNotice: (message: string) => void }) {
   const [users, setUsers] = useState<AdminUser[]>([]); const [roles, setRoles] = useState<Role[]>([]);
   const [overview, setOverview] = useState<Overview | null>(null); const [loading, setLoading] = useState(true); const [editing, setEditing] = useState<AdminUser | null>(null);
+  const [query, setQuery] = useState(''); const [loadError, setLoadError] = useState(''); const [pendingDeactivate, setPendingDeactivate] = useState<AdminUser | null>(null);
   const load = useCallback(async () => {
-    setLoading(true);
+    setLoading(true); setLoadError('');
     try {
       const [userData, roleData, overviewData] = await Promise.all([api<{ users: AdminUser[] }>('/api/admin/users'), api<{ roles: Role[]; permissions: Permission[] }>('/api/admin/roles'), api<Overview>('/api/admin/overview')]);
       setUsers(userData.users); setRoles(roleData.roles); setOverview(overviewData);
-    } catch (error) { onNotice(error instanceof Error ? error.message : 'Could not load users.'); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not load users.';
+      setLoadError(message); onNotice(message);
+    }
     finally { setLoading(false); }
   }, [onNotice]);
   useEffect(() => { void load(); }, [load]);
 
+  const filteredUsers = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return users;
+    return users.filter((user) => [user.fullName, user.email, user.department, user.roles.join(' '), user.isActive ? 'active' : 'inactive'].some((value) => value.toLowerCase().includes(normalized)));
+  }, [query, users]);
+
   async function deactivate(user: AdminUser) {
-    if (!window.confirm(`Deactivate ${user.fullName}? Their active sessions will end immediately.`)) return;
-    try { await api(`/api/admin/users/${user.id}`, { method: 'DELETE', body: '{}' }); onNotice(`${user.fullName} was deactivated.`); await load(); }
+    try { await api(`/api/admin/users/${user.id}`, { method: 'DELETE', body: '{}' }); setPendingDeactivate(null); onNotice(`${user.fullName} was deactivated.`); await load(); }
     catch (error) { onNotice(error instanceof Error ? error.message : 'Could not deactivate user.'); }
   }
   return (
     <section>
       <div className="page-heading admin-heading"><div><span className="page-kicker">ADMINISTRATION</span><h1>Employees</h1><p>Manage portal identities, roles, and active access.</p></div><Button onClick={() => setAddOpen(true)}><UserRoundPlus /> Add employee</Button></div>
       <div className="metric-grid"><Metric icon={UsersRound} label="Active employees" value={overview?.activeUsers ?? '—'} tone="blue" /><Metric icon={ShieldEllipsis} label="Configured roles" value={overview?.roles ?? '—'} tone="violet" /><Metric icon={CircleUserRound} label="Active sessions" value={overview?.activeSessions ?? '—'} tone="teal" /><Metric icon={Activity} label="Events · 24 hours" value={overview?.activity24h ?? '—'} tone="orange" /></div>
-      <div className="data-card"><div className="data-card-head"><div><h2>Employee directory</h2><p>{users.length} portal accounts</p></div><div className="mini-search"><Search /><span>Search employees</span></div></div>
-        {loading ? <RowsLoading /> : <Table><TableHeader><TableRow><TableHead>Employee</TableHead><TableHead>Department</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Last sign-in</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader><TableBody>{users.map((user) => <TableRow key={user.id}><TableCell><div className="person-cell"><span>{initials(user.fullName)}</span><div><b>{user.fullName}</b><small>{user.email}</small></div></div></TableCell><TableCell>{user.department}</TableCell><TableCell><div className="role-list">{user.roles.map((role) => <Badge variant="secondary" key={role}>{role}</Badge>)}</div></TableCell><TableCell><span className={`status-pill ${user.isActive ? 'active' : 'inactive'}`}><i />{user.isActive ? 'Active' : 'Inactive'}</span></TableCell><TableCell>{dateTime(user.lastLoginAt)}</TableCell><TableCell><div className="row-actions"><Button variant="ghost" size="icon-sm" onClick={() => setEditing(user)} aria-label={`Edit ${user.fullName}`}><Pencil /></Button><Button variant="ghost" size="icon-sm" onClick={() => deactivate(user)} aria-label={`Deactivate ${user.fullName}`} disabled={!user.isActive}><Trash2 /></Button></div></TableCell></TableRow>)}</TableBody></Table>}
+      <div className="data-card"><div className="data-card-head"><div><h2>Employee directory</h2><p>{query ? `${filteredUsers.length} of ${users.length}` : users.length} portal accounts</p></div><label className="mini-search"><Search /><span className="sr-only">Search employees</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search employees" /></label></div>
+        {loading ? <RowsLoading /> : loadError ? <LoadError message={loadError} onRetry={() => void load()} /> : <Table><TableHeader><TableRow><TableHead>Employee</TableHead><TableHead>Department</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Last sign-in</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></TableRow></TableHeader><TableBody>{filteredUsers.map((user) => <TableRow key={user.id}><TableCell><div className="person-cell"><span>{initials(user.fullName)}</span><div><b>{user.fullName}</b><small>{user.email}</small></div></div></TableCell><TableCell>{user.department}</TableCell><TableCell><div className="role-list">{user.roles.map((role) => <Badge variant="secondary" key={role}>{role}</Badge>)}</div></TableCell><TableCell><span className={`status-pill ${user.isActive ? 'active' : 'inactive'}`}><i />{user.isActive ? 'Active' : 'Inactive'}</span></TableCell><TableCell>{dateTime(user.lastLoginAt)}</TableCell><TableCell><div className="row-actions"><Button variant="ghost" size="icon-sm" onClick={() => setEditing(user)} aria-label={`Edit ${user.fullName}`}><Pencil /></Button><Button variant="ghost" size="icon-sm" onClick={() => setPendingDeactivate(user)} aria-label={`Deactivate ${user.fullName}`} disabled={!user.isActive}><Trash2 /></Button></div></TableCell></TableRow>)}{!filteredUsers.length && <TableRow><TableCell colSpan={6}><div className="table-empty"><Search /><b>No employees found</b><span>Try a name, email, department, role or status.</span></div></TableCell></TableRow>}</TableBody></Table>}
       </div>
       <UserDialog open={addOpen} onOpenChange={setAddOpen} roles={roles} onSaved={async () => { onNotice('Employee account created.'); await load(); }} />
       <UserDialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)} roles={roles} user={editing} onSaved={async () => { setEditing(null); onNotice('Employee access updated.'); await load(); }} />
+      <AlertDialog open={Boolean(pendingDeactivate)} onOpenChange={(open) => !open && setPendingDeactivate(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>Deactivate {pendingDeactivate?.fullName}?</AlertDialogTitle><AlertDialogDescription>The employee will lose portal access and all active sessions will end immediately. You can reactivate the account later.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>Keep active</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => pendingDeactivate && void deactivate(pendingDeactivate)}>Deactivate employee</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }
@@ -259,30 +390,80 @@ function UsersAdmin({ addOpen, setAddOpen, onNotice }: { addOpen: boolean; setAd
 function UserDialog({ open, onOpenChange, roles, user, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; roles: Role[]; user?: AdminUser | null; onSaved: () => Promise<void> }) {
   const [fullName, setFullName] = useState(''); const [email, setEmail] = useState(''); const [department, setDepartment] = useState(''); const [password, setPassword] = useState(''); const [roleIds, setRoleIds] = useState<number[]>([]); const [active, setActive] = useState(true); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   useEffect(() => { if (open) { setFullName(user?.fullName ?? ''); setEmail(user?.email ?? ''); setDepartment(user?.department ?? ''); setPassword(''); setRoleIds(user?.roleIds ?? []); setActive(user?.isActive ?? true); setError(''); } }, [open, user]);
-  async function submit(event: SyntheticEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); setError(''); try { if (user) await api(`/api/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ fullName, department, isActive: active, roleIds, ...(password ? { password } : {}) }) }); else await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ fullName, email, department, password, roleIds }) }); onOpenChange(false); await onSaved(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save employee.'); } finally { setBusy(false); } }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="admin-dialog"><DialogHeader><DialogTitle>{user ? 'Edit employee access' : 'Add an employee'}</DialogTitle><DialogDescription>{user ? 'Changes apply to the employee’s next request.' : 'Create a portal identity and assign its first role.'}</DialogDescription></DialogHeader><form onSubmit={submit} className="dialog-form"><div className="dialog-grid"><label>Full name<Input value={fullName} onChange={(e) => setFullName(e.target.value)} required /></label><label>Department<Input value={department} onChange={(e) => setDepartment(e.target.value)} required /></label></div><label>Work email<Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={Boolean(user)} /></label><label>{user ? 'New password (optional)' : 'Temporary password'}<Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required={!user} minLength={8} /></label><fieldset><legend>Assigned roles</legend><div className="permission-grid">{roles.map((role) => <label key={role.id}><Checkbox checked={roleIds.includes(role.id)} onCheckedChange={(checked) => setRoleIds((current) => checked ? [...current, role.id] : current.filter((id) => id !== role.id))} /><span><b>{role.name}</b><small>{role.description}</small></span></label>)}</div></fieldset>{user && <label className="active-toggle"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /><span>Account is active</span></label>}{error && <p className="dialog-error">{error}</p>}<DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Saving…' : user ? 'Save changes' : 'Create employee'}</Button></DialogFooter></form></DialogContent></Dialog>;
+  async function submit(event: SyntheticEvent<HTMLFormElement>) {
+    event.preventDefault(); setError('');
+    if (!user && !roleIds.length) { setError('Select at least one role for the employee.'); return; }
+    setBusy(true);
+    try {
+      if (user) await api(`/api/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ fullName, department, isActive: active, roleIds, ...(password ? { password } : {}) }) });
+      else await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ fullName, email, department, password, roleIds }) });
+      onOpenChange(false); await onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save employee.'); }
+    finally { setBusy(false); }
+  }
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="admin-dialog"><DialogHeader><DialogTitle>{user ? 'Edit employee access' : 'Add an employee'}</DialogTitle><DialogDescription>{user ? 'Changes apply to the employee’s next request.' : 'Create a portal identity and assign its first role.'}</DialogDescription></DialogHeader><form onSubmit={submit} className="dialog-form"><div className="dialog-grid"><label>Full name<Input autoComplete="name" value={fullName} onChange={(e) => setFullName(e.target.value)} required /></label><label>Department<Input autoComplete="organization-title" value={department} onChange={(e) => setDepartment(e.target.value)} required /></label></div><label>Work email<Input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={Boolean(user)} /></label><label>{user ? 'New password (optional)' : 'Temporary password'}<Input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} required={!user} minLength={8} /></label><fieldset><legend>Assigned roles</legend><div className="permission-grid">{roles.map((role) => <label key={role.id}><Checkbox checked={roleIds.includes(role.id)} onCheckedChange={(checked) => setRoleIds((current) => checked ? current.includes(role.id) ? current : [...current, role.id] : current.filter((id) => id !== role.id))} /><span><b>{role.name}</b><small>{role.description}</small></span></label>)}</div></fieldset>{user && <label className="active-toggle"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /><span>Account is active</span></label>}{error && <p className="dialog-error">{error}</p>}<DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Saving…' : user ? 'Save changes' : 'Create employee'}</Button></DialogFooter></form></DialogContent></Dialog>;
 }
 
 function RolesAdmin({ onNotice }: { onNotice: (message: string) => void }) {
-  const [roles, setRoles] = useState<Role[]>([]); const [permissions, setPermissions] = useState<Permission[]>([]); const [loading, setLoading] = useState(true); const [editing, setEditing] = useState<Role | 'new' | null>(null);
-  const load = useCallback(async () => { setLoading(true); try { const data = await api<{ roles: Role[]; permissions: Permission[] }>('/api/admin/roles'); setRoles(data.roles); setPermissions(data.permissions); } catch (error) { onNotice(error instanceof Error ? error.message : 'Could not load roles.'); } finally { setLoading(false); } }, [onNotice]);
+  const [roles, setRoles] = useState<Role[]>([]); const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [loading, setLoading] = useState(true); const [editing, setEditing] = useState<Role | 'new' | null>(null);
+  const [loadError, setLoadError] = useState(''); const [pendingDelete, setPendingDelete] = useState<Role | null>(null);
+  const load = useCallback(async () => {
+    setLoading(true); setLoadError('');
+    try {
+      const data = await api<{ roles: Role[]; permissions: Permission[] }>('/api/admin/roles');
+      setRoles(data.roles); setPermissions(data.permissions);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not load roles.';
+      setLoadError(message); onNotice(message);
+    } finally { setLoading(false); }
+  }, [onNotice]);
   useEffect(() => { void load(); }, [load]);
-  async function remove(role: Role) { if (!window.confirm(`Delete the ${role.name} role?`)) return; try { await api(`/api/admin/roles/${role.id}`, { method: 'DELETE', body: '{}' }); onNotice('Role deleted.'); await load(); } catch (error) { onNotice(error instanceof Error ? error.message : 'Could not delete role.'); } }
-  return <section><div className="page-heading admin-heading"><div><span className="page-kicker">ACCESS CONTROL</span><h1>Roles & permissions</h1><p>Decide which Zoho services and portal actions each role can use.</p></div><Button onClick={() => setEditing('new')}><Plus /> Create role</Button></div>{loading ? <RowsLoading /> : <div className="role-card-grid">{roles.map((role) => <article className="role-card" key={role.id}><div className="role-card-top"><span className={`role-symbol role-${role.slug}`}><ShieldCheck /></span><div className="role-menu"><button onClick={() => setEditing(role)} aria-label={`Edit ${role.name}`}><Pencil /></button>{!role.systemRole && <button onClick={() => remove(role)} aria-label={`Delete ${role.name}`}><Trash2 /></button>}</div></div><div><span className="role-type">{role.systemRole ? 'BUILT-IN ROLE' : 'CUSTOM ROLE'}</span><h2>{role.name}</h2><p>{role.description}</p></div><div className="role-stats"><span><b>{role.userCount}</b> {role.userCount === 1 ? 'user' : 'users'}</span><span><b>{role.permissionIds.length}</b> permissions</span></div><div className="role-permissions">{role.permissions.slice(0, 3).map((permission) => <Badge variant="secondary" key={permission}>{permission}</Badge>)}{role.permissions.length > 3 && <Badge variant="outline">+{role.permissions.length - 3}</Badge>}</div><button className="manage-role" onClick={() => setEditing(role)}>Manage access <ArrowRight /></button></article>)}</div>}<RoleDialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)} role={editing === 'new' ? null : editing} permissions={permissions} onSaved={async () => { setEditing(null); onNotice(editing === 'new' ? 'Role created.' : 'Role permissions updated.'); await load(); }} /></section>;
+  async function remove(role: Role) {
+    try { await api(`/api/admin/roles/${role.id}`, { method: 'DELETE', body: '{}' }); setPendingDelete(null); onNotice('Role deleted.'); await load(); }
+    catch (error) { onNotice(error instanceof Error ? error.message : 'Could not delete role.'); }
+  }
+  const isCreating = editing === 'new';
+  return (
+    <section>
+      <div className="page-heading admin-heading"><div><span className="page-kicker">ACCESS CONTROL</span><h1>Roles & permissions</h1><p>Decide which Zoho services and portal actions each role can use.</p></div><Button onClick={() => setEditing('new')}><Plus /> Create role</Button></div>
+      {loading ? <RowsLoading /> : loadError ? <LoadError message={loadError} onRetry={() => void load()} /> : roles.length ? <div className="role-card-grid">{roles.map((role) => <article className="role-card" key={role.id}><div className="role-card-top"><span className={`role-symbol role-${role.slug}`}><ShieldCheck /></span><div className="role-menu"><button onClick={() => setEditing(role)} aria-label={`Edit ${role.name}`}><Pencil /></button>{!role.systemRole && <button onClick={() => setPendingDelete(role)} aria-label={`Delete ${role.name}`} disabled={role.userCount > 0} title={role.userCount > 0 ? 'Remove this role from all employees before deleting it.' : undefined}><Trash2 /></button>}</div></div><div><span className="role-type">{role.systemRole ? 'BUILT-IN ROLE' : 'CUSTOM ROLE'}</span><h2>{role.name}</h2><p>{role.description}</p></div><div className="role-stats"><span><b>{role.userCount}</b> {role.userCount === 1 ? 'user' : 'users'}</span><span><b>{role.permissionIds.length}</b> permissions</span></div><div className="role-permissions">{role.permissions.slice(0, 3).map((permission) => <Badge variant="secondary" key={permission}>{permission}</Badge>)}{role.permissions.length > 3 && <Badge variant="outline">+{role.permissions.length - 3}</Badge>}</div><button className="manage-role" onClick={() => setEditing(role)}>Manage access <ArrowRight /></button></article>)}</div> : <div className="empty-state"><ShieldEllipsis /><h3>No roles configured</h3><p>Create a role to begin assigning access.</p></div>}
+      <RoleDialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)} role={editing === 'new' ? null : editing} permissions={permissions} onSaved={async () => { setEditing(null); onNotice(isCreating ? 'Role created.' : 'Role permissions updated.'); await load(); }} />
+      <AlertDialog open={Boolean(pendingDelete)} onOpenChange={(open) => !open && setPendingDelete(null)}>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {pendingDelete?.name}?</AlertDialogTitle><AlertDialogDescription>This permanently removes the custom role and its permission settings. This action cannot be undone.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => pendingDelete && void remove(pendingDelete)}>Delete role</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+      </AlertDialog>
+    </section>
+  );
 }
 
 function RoleDialog({ open, onOpenChange, role, permissions, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; role: Role | null; permissions: Permission[]; onSaved: () => Promise<void> }) {
   const [name, setName] = useState(''); const [description, setDescription] = useState(''); const [permissionIds, setPermissionIds] = useState<number[]>([]); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   useEffect(() => { if (open) { setName(role?.name ?? ''); setDescription(role?.description ?? ''); setPermissionIds(role?.permissionIds ?? []); setError(''); } }, [open, role]);
-  async function submit(event: SyntheticEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); setError(''); try { if (role) await api(`/api/admin/roles/${role.id}`, { method: 'PATCH', body: JSON.stringify({ name, description, permissionIds }) }); else await api('/api/admin/roles', { method: 'POST', body: JSON.stringify({ name, description, permissionIds }) }); onOpenChange(false); await onSaved(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save role.'); } finally { setBusy(false); } }
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="admin-dialog"><DialogHeader><DialogTitle>{role ? `Manage ${role.name}` : 'Create a role'}</DialogTitle><DialogDescription>Permissions are enforced by the backend on every protected request.</DialogDescription></DialogHeader><form onSubmit={submit} className="dialog-form"><label>Role name<Input value={name} onChange={(e) => setName(e.target.value)} required disabled={Boolean(role?.systemRole)} /></label><label>Description<Input value={description} onChange={(e) => setDescription(e.target.value)} /></label><fieldset><legend>Permissions</legend><div className="permission-grid permission-list">{permissions.map((permission) => <label key={permission.id}><Checkbox checked={permissionIds.includes(permission.id)} onCheckedChange={(checked) => setPermissionIds((current) => checked ? [...current, permission.id] : current.filter((id) => id !== permission.id))} /><span><b>{permission.name}</b><small>{permission.description}</small></span></label>)}</div></fieldset>{error && <p className="dialog-error">{error}</p>}<DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Saving…' : role ? 'Save permissions' : 'Create role'}</Button></DialogFooter></form></DialogContent></Dialog>;
+  async function submit(event: SyntheticEvent<HTMLFormElement>) {
+    event.preventDefault(); setError('');
+    if (!permissionIds.length) { setError('Select at least one permission for this role.'); return; }
+    setBusy(true);
+    try {
+      if (role) await api(`/api/admin/roles/${role.id}`, { method: 'PATCH', body: JSON.stringify({ name, description, permissionIds }) });
+      else await api('/api/admin/roles', { method: 'POST', body: JSON.stringify({ name, description, permissionIds }) });
+      onOpenChange(false); await onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save role.'); }
+    finally { setBusy(false); }
+  }
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="admin-dialog"><DialogHeader><DialogTitle>{role ? `Manage ${role.name}` : 'Create a role'}</DialogTitle><DialogDescription>Permissions are enforced by the backend on every protected request.</DialogDescription></DialogHeader><form onSubmit={submit} className="dialog-form"><label>Role name<Input value={name} onChange={(e) => setName(e.target.value)} required disabled={Boolean(role?.systemRole)} /></label><label>Description<Input value={description} onChange={(e) => setDescription(e.target.value)} /></label><fieldset><legend>Permissions</legend><div className="permission-grid permission-list">{permissions.map((permission) => <label key={permission.id}><Checkbox checked={permissionIds.includes(permission.id)} onCheckedChange={(checked) => setPermissionIds((current) => checked ? current.includes(permission.id) ? current : [...current, permission.id] : current.filter((id) => id !== permission.id))} /><span><b>{permission.name}</b><small>{permission.description}</small></span></label>)}</div></fieldset>{error && <p className="dialog-error">{error}</p>}<DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Saving…' : role ? 'Save permissions' : 'Create role'}</Button></DialogFooter></form></DialogContent></Dialog>;
 }
 
 function AuditActivity() {
-  const [logs, setLogs] = useState<AuditLog[]>([]); const [loading, setLoading] = useState(true);
-  useEffect(() => { void api<{ logs: AuditLog[] }>('/api/admin/audit').then((data) => setLogs(data.logs)).catch(() => setLogs([])).finally(() => setLoading(false)); }, []);
+  const [logs, setLogs] = useState<AuditLog[]>([]); const [loading, setLoading] = useState(true); const [loadError, setLoadError] = useState('');
+  const load = useCallback(async () => {
+    setLoading(true); setLoadError('');
+    try { setLogs((await api<{ logs: AuditLog[] }>('/api/admin/audit')).logs); }
+    catch (error) { setLoadError(error instanceof Error ? error.message : 'Could not load audit activity.'); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
   const labels: Record<string, string> = { 'auth.login': 'Signed in', 'auth.logout': 'Signed out', 'zoho.launch': 'Opened Zoho service', 'user.create': 'Created employee', 'user.update': 'Updated employee', 'user.deactivate': 'Deactivated employee', 'role.create': 'Created role', 'role.update': 'Updated role', 'role.delete': 'Deleted role', 'permission.denied': 'Permission denied' };
-  return <section><div className="page-heading"><div><span className="page-kicker">SECURITY MONITORING</span><h1>Audit activity</h1><p>Review the most recent authentication, access, and administration events.</p></div><div className="audit-healthy"><ShieldCheck /><span><small>Audit system</small><b>Recording activity</b></span></div></div><div className="data-card audit-card">{loading ? <RowsLoading /> : <Table><TableHeader><TableRow><TableHead>Event</TableHead><TableHead>Actor</TableHead><TableHead>Resource</TableHead><TableHead>Status</TableHead><TableHead>Time</TableHead></TableRow></TableHeader><TableBody>{logs.map((log) => <TableRow key={log.id}><TableCell><div className="event-cell"><span><Activity /></span><b>{labels[log.action] ?? log.action}</b></div></TableCell><TableCell>{log.actor_email ?? 'System'}</TableCell><TableCell>{log.resource}{log.resource_id ? ` · ${log.resource_id}` : ''}</TableCell><TableCell><span className={`status-pill ${log.status === 'success' ? 'active' : 'inactive'}`}><i />{log.status}</span></TableCell><TableCell>{dateTime(log.created_at)}</TableCell></TableRow>)}</TableBody></Table>}</div></section>;
+  return <section><div className="page-heading"><div><span className="page-kicker">SECURITY MONITORING</span><h1>Audit activity</h1><p>Review the most recent authentication, access, and administration events.</p></div><div className="audit-healthy"><ShieldCheck /><span><small>Audit system</small><b>Recording activity</b></span></div></div><div className="data-card audit-card">{loading ? <RowsLoading /> : loadError ? <LoadError message={loadError} onRetry={() => void load()} /> : logs.length ? <Table><TableHeader><TableRow><TableHead>Event</TableHead><TableHead>Actor</TableHead><TableHead>Resource</TableHead><TableHead>Status</TableHead><TableHead>Time</TableHead></TableRow></TableHeader><TableBody>{logs.map((log) => <TableRow key={log.id}><TableCell><div className="event-cell"><span><Activity /></span><b>{labels[log.action] ?? log.action}</b></div></TableCell><TableCell>{log.actor_email ?? 'System'}</TableCell><TableCell>{log.resource}{log.resource_id ? ` · ${log.resource_id}` : ''}</TableCell><TableCell><span className={`status-pill ${log.status === 'success' ? 'active' : 'inactive'}`}><i />{log.status}</span></TableCell><TableCell>{dateTime(log.created_at)}</TableCell></TableRow>)}</TableBody></Table> : <div className="table-empty"><Activity /><b>No activity yet</b><span>Security and access events will appear here.</span></div>}</div></section>;
 }
 
 function Metric({ icon: Icon, label, value, tone }: { icon: typeof UsersRound; label: string; value: string | number; tone: string }) {
@@ -291,4 +472,8 @@ function Metric({ icon: Icon, label, value, tone }: { icon: typeof UsersRound; l
 
 function RowsLoading() {
   return <div className="rows-loading"><span /><span /><span /><span /></div>;
+}
+
+function LoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div className="load-error"><ShieldEllipsis /><b>Couldn’t load this section</b><span>{message}</span><Button type="button" variant="outline" onClick={onRetry}><RefreshCw /> Try again</Button></div>;
 }

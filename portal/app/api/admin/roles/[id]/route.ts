@@ -15,12 +15,25 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const body = await request.json<{ name?: string; description?: string; permissionIds?: number[] }>();
     const existing = await env.DB.prepare('SELECT id, system_role FROM roles WHERE id = ?').bind(id).first<{ id: number; system_role: number }>();
     if (!existing) return json({ error: 'Role not found.' }, { status: 404 });
+    const proposedName = body.name?.trim();
+    const proposedSlug = proposedName?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (proposedName !== undefined && (proposedName.length < 2 || !proposedSlug)) return json({ error: 'Enter a valid role name.' }, { status: 400 });
+    if (proposedSlug && !existing.system_role) {
+      const duplicate = await env.DB.prepare('SELECT id FROM roles WHERE slug = ? AND id <> ?').bind(proposedSlug, id).first();
+      if (duplicate) return json({ error: 'A role with this name already exists.' }, { status: 409 });
+    }
+    const permissionIds = Array.isArray(body.permissionIds) ? [...new Set(body.permissionIds)].filter((permissionId) => Number.isInteger(permissionId) && permissionId > 0) : null;
+    if (permissionIds && !permissionIds.length) return json({ error: 'Select at least one permission for this role.' }, { status: 400 });
+    if (permissionIds?.length) {
+      const validPermissions = await env.DB.prepare(`SELECT id FROM permissions WHERE id IN (${permissionIds.map(() => '?').join(',')})`).bind(...permissionIds).all<{ id: number }>();
+      if (validPermissions.results.length !== permissionIds.length) return json({ error: 'One or more selected permissions no longer exist.' }, { status: 400 });
+    }
     const statements = [];
-    if (body.name?.trim() && !existing.system_role) statements.push(env.DB.prepare('UPDATE roles SET name = ? WHERE id = ?').bind(body.name.trim(), id));
+    if (proposedName && proposedSlug && !existing.system_role) statements.push(env.DB.prepare('UPDATE roles SET name = ?, slug = ? WHERE id = ?').bind(proposedName, proposedSlug, id));
     if (typeof body.description === 'string') statements.push(env.DB.prepare('UPDATE roles SET description = ? WHERE id = ?').bind(body.description.trim(), id));
-    if (Array.isArray(body.permissionIds)) {
+    if (permissionIds) {
       statements.push(env.DB.prepare('DELETE FROM role_permissions WHERE role_id = ?').bind(id));
-      for (const permissionId of [...new Set(body.permissionIds)].filter(Number.isInteger)) statements.push(env.DB.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)').bind(id, permissionId));
+      for (const permissionId of permissionIds) statements.push(env.DB.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)').bind(id, permissionId));
     }
     if (statements.length) await env.DB.batch(statements);
     await writeAudit({ user: actor, action: 'role.update', resource: 'role', resourceId: id, request, details: { fields: Object.keys(body) } });

@@ -39,6 +39,10 @@ export async function POST(request: Request) {
     const fullName = body.fullName?.trim() ?? '';
     const department = body.department?.trim() || 'General';
     if (!email.includes('@') || fullName.length < 2 || (body.password?.length ?? 0) < 8) return json({ error: 'Provide a valid email, name, and password of at least 8 characters.' }, { status: 400 });
+    const roleIds = [...new Set(body.roleIds ?? [])].filter((id) => Number.isInteger(id) && id > 0);
+    if (!roleIds.length) return json({ error: 'Select at least one role for the employee.' }, { status: 400 });
+    const validRoles = await env.DB.prepare(`SELECT id FROM roles WHERE id IN (${roleIds.map(() => '?').join(',')})`).bind(...roleIds).all<{ id: number }>();
+    if (validRoles.results.length !== roleIds.length) return json({ error: 'One or more selected roles no longer exist.' }, { status: 400 });
     const exists = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
     if (exists) return json({ error: 'A user with this email already exists.' }, { status: 409 });
     const password = await hashPassword(body.password!);
@@ -46,7 +50,6 @@ export async function POST(request: Request) {
       INSERT INTO users (email, full_name, department, password_hash, password_salt, is_active)
       VALUES (?, ?, ?, ?, ?, 1) RETURNING id
     `).bind(email, fullName, department, password.hash, password.salt).first<{ id: number }>();
-    const roleIds = [...new Set(body.roleIds ?? [])].filter(Number.isInteger);
     if (created && roleIds.length) await env.DB.batch(roleIds.map((roleId) => env.DB.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').bind(created.id, roleId)));
     await writeAudit({ user: actor, action: 'user.create', resource: 'user', resourceId: created?.id, request, details: { email, roleIds } });
     return json({ id: created?.id }, { status: 201 });

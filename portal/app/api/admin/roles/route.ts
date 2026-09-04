@@ -41,10 +41,13 @@ export async function POST(request: Request) {
     const name = body.name?.trim() ?? '';
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     if (name.length < 2 || !slug) return json({ error: 'Enter a valid role name.' }, { status: 400 });
+    const permissionIds = [...new Set(body.permissionIds ?? [])].filter((id) => Number.isInteger(id) && id > 0);
+    if (!permissionIds.length) return json({ error: 'Select at least one permission for this role.' }, { status: 400 });
+    const validPermissions = await env.DB.prepare(`SELECT id FROM permissions WHERE id IN (${permissionIds.map(() => '?').join(',')})`).bind(...permissionIds).all<{ id: number }>();
+    if (validPermissions.results.length !== permissionIds.length) return json({ error: 'One or more selected permissions no longer exist.' }, { status: 400 });
     const existing = await env.DB.prepare('SELECT id FROM roles WHERE slug = ?').bind(slug).first();
     if (existing) return json({ error: 'A role with this name already exists.' }, { status: 409 });
     const role = await env.DB.prepare('INSERT INTO roles (name, slug, description, system_role) VALUES (?, ?, ?, 0) RETURNING id').bind(name, slug, body.description?.trim() ?? '').first<{ id: number }>();
-    const permissionIds = [...new Set(body.permissionIds ?? [])].filter(Number.isInteger);
     if (role && permissionIds.length) await env.DB.batch(permissionIds.map((permissionId) => env.DB.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)').bind(role.id, permissionId)));
     await writeAudit({ user: actor, action: 'role.create', resource: 'role', resourceId: role?.id, request, details: { name, permissionIds } });
     return json({ id: role?.id }, { status: 201 });

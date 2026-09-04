@@ -140,8 +140,11 @@ export function json(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data), { ...init, headers });
 }
 
-export function errorResponse(error: unknown) {
-  if (error instanceof Response) return json({ error: error.statusText || 'Request failed.' }, { status: error.status });
+export async function errorResponse(error: unknown) {
+  if (error instanceof Response) {
+    const message = await error.clone().text().catch(() => '');
+    return json({ error: message || error.statusText || 'Request failed.' }, { status: error.status });
+  }
   console.error(error);
   return json({ error: 'The server could not complete the request.' }, { status: 500 });
 }

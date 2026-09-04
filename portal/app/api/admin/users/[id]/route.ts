@@ -17,6 +17,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const existing = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(id).first();
     if (!existing) return json({ error: 'User not found.' }, { status: 404 });
     if (id === actor.id && body.isActive === false) return json({ error: 'You cannot deactivate your own account.' }, { status: 400 });
+    const roleIds = Array.isArray(body.roleIds) ? [...new Set(body.roleIds)].filter((roleId) => Number.isInteger(roleId) && roleId > 0) : null;
+    if (roleIds?.length) {
+      const validRoles = await env.DB.prepare(`SELECT id FROM roles WHERE id IN (${roleIds.map(() => '?').join(',')})`).bind(...roleIds).all<{ id: number }>();
+      if (validRoles.results.length !== roleIds.length) return json({ error: 'One or more selected roles no longer exist.' }, { status: 400 });
+    }
 
     const statements = [];
     if (body.fullName?.trim()) statements.push(env.DB.prepare('UPDATE users SET full_name = ?, updated_at = unixepoch() WHERE id = ?').bind(body.fullName.trim(), id));
@@ -27,9 +32,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       const password = await hashPassword(body.password);
       statements.push(env.DB.prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = unixepoch() WHERE id = ?').bind(password.hash, password.salt, id));
     }
-    if (Array.isArray(body.roleIds)) {
+    if (roleIds) {
       statements.push(env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(id));
-      for (const roleId of [...new Set(body.roleIds)].filter(Number.isInteger)) statements.push(env.DB.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').bind(id, roleId));
+      for (const roleId of roleIds) statements.push(env.DB.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').bind(id, roleId));
     }
     if (statements.length) await env.DB.batch(statements);
     if (body.isActive === false || body.password) await env.DB.prepare('UPDATE sessions SET revoked_at = unixepoch() WHERE user_id = ? AND revoked_at IS NULL').bind(id).run();
@@ -46,6 +51,8 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     const id = numericId((await context.params).id);
     if (!id) return json({ error: 'Invalid user id.' }, { status: 400 });
     if (id === actor.id) return json({ error: 'You cannot remove your own account.' }, { status: 400 });
+    const existing = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(id).first();
+    if (!existing) return json({ error: 'User not found.' }, { status: 404 });
     await env.DB.batch([
       env.DB.prepare('UPDATE users SET is_active = 0, updated_at = unixepoch() WHERE id = ?').bind(id),
       env.DB.prepare('UPDATE sessions SET revoked_at = unixepoch() WHERE user_id = ? AND revoked_at IS NULL').bind(id),
