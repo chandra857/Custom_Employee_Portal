@@ -7,8 +7,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-ibm-plex-sans);
-  --font-mono: var(--font-ibm-plex-sans);
+  --font-sans: 'IBM Plex Sans';
+  --font-mono: 'IBM Plex Sans';
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -49,7 +49,7 @@
 }
 
 body {
-  font-family: var(--font-ibm-plex-sans), 'IBM Plex Sans', Arial, Helvetica, sans-serif;
+  font-family: 'IBM Plex Sans', Arial, Helvetica, sans-serif;
 }
 
 :root {
@@ -242,7 +242,7 @@ button { cursor: pointer; }
 .access-summary > div:nth-child(2) b { margin-top: .18rem; color: #24314e; font-size: .86rem; }
 .summary-roles { display: flex; flex-wrap: wrap; gap: .35rem; }
 .summary-shield { width: 1.2rem; color: #1ea78c; }
-.section-title { display: flex; align-items: end; justify-content: space-between; margin-bottom: 1.1rem; }
+.section-title { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 1.1rem; }
 .section-title h2, .data-card-head h2 { color: #202d49; font-size: 1.05rem; letter-spacing: -.02em; }
 .section-title p, .data-card-head p { margin-top: .25rem; color: #929bab; font-size: .72rem; }
 .sync-time { display: flex; align-items: center; gap: .35rem; color: #8c96a7; font-size: .66rem; }

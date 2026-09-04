@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { database } from '@/db';
 import { hashPassword } from './auth-crypto';
 
 const permissionRows = [
@@ -49,31 +49,32 @@ export function ensureDemoData() {
 }
 
 async function seedDemoData() {
-  const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM users').first<{ count: number }>();
+  const count = await database.prepare('SELECT COUNT(*)::integer AS count FROM users').first<{ count: number }>();
   if ((count?.count ?? 0) > 0) return;
 
-  await env.DB.batch([
-    ...permissionRows.map(([key, name, description]) => env.DB.prepare('INSERT OR IGNORE INTO permissions (key, name, description) VALUES (?, ?, ?)').bind(key, name, description)),
-    ...roleRows.map(([name, slug, description]) => env.DB.prepare('INSERT OR IGNORE INTO roles (name, slug, description, system_role) VALUES (?, ?, ?, 1)').bind(name, slug, description)),
+  await database.batch([
+    ...permissionRows.map(([key, name, description]) => database.prepare('INSERT INTO permissions (key, name, description) VALUES (?, ?, ?) ON CONFLICT DO NOTHING').bind(key, name, description)),
+    ...roleRows.map(([name, slug, description]) => database.prepare('INSERT INTO roles (name, slug, description, system_role) VALUES (?, ?, ?, 1) ON CONFLICT DO NOTHING').bind(name, slug, description)),
   ]);
 
-  const permissions = await env.DB.prepare('SELECT id, key FROM permissions').all<{ id: number; key: string }>();
-  const roles = await env.DB.prepare('SELECT id, slug FROM roles').all<{ id: number; slug: string }>();
+  const permissions = await database.prepare('SELECT id, key FROM permissions').all<{ id: number; key: string }>();
+  const roles = await database.prepare('SELECT id, slug FROM roles').all<{ id: number; slug: string }>();
   const permissionId = new Map(permissions.results.map((item) => [item.key, item.id]));
   const roleId = new Map(roles.results.map((item) => [item.slug, item.id]));
 
   const grants = Object.entries(rolePermissions).flatMap(([role, keys]) => keys.map((key) => {
-    return env.DB.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)').bind(roleId.get(role), permissionId.get(key));
+    return database.prepare('INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?) ON CONFLICT DO NOTHING').bind(roleId.get(role), permissionId.get(key));
   }));
-  if (grants.length) await env.DB.batch(grants);
+  if (grants.length) await database.batch(grants);
 
   const { hash, salt } = await hashPassword('Admin@123');
-  await env.DB.batch(demoUsers.map(([email, fullName, department]) => env.DB.prepare(`
-    INSERT OR IGNORE INTO users (email, full_name, department, password_hash, password_salt, is_active)
+  await database.batch(demoUsers.map(([email, fullName, department]) => database.prepare(`
+    INSERT INTO users (email, full_name, department, password_hash, password_salt, is_active)
     VALUES (?, ?, ?, ?, ?, 1)
+    ON CONFLICT DO NOTHING
   `).bind(email, fullName, department, hash, salt)));
 
-  const users = await env.DB.prepare('SELECT id, email FROM users').all<{ id: number; email: string }>();
+  const users = await database.prepare('SELECT id, email FROM users').all<{ id: number; email: string }>();
   const userId = new Map(users.results.map((item) => [item.email, item.id]));
-  await env.DB.batch(demoUsers.map(([email, , , role]) => env.DB.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').bind(userId.get(email), roleId.get(role))));
+  await database.batch(demoUsers.map(([email, , , role]) => database.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?) ON CONFLICT DO NOTHING').bind(userId.get(email), roleId.get(role))));
 }

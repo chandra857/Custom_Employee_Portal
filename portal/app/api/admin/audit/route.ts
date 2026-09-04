@@ -1,10 +1,10 @@
-import { env } from 'cloudflare:workers';
+import { database } from '@/db';
 import { authenticateRequest, errorResponse, json } from '@/lib/auth';
 
 export async function GET(request: Request) {
   try {
     await authenticateRequest(request, 'audit.read');
-    const logs = await env.DB.prepare(`
+    const logs = await database.prepare(`
       SELECT id, actor_email, action, resource, resource_id, status, details, ip_address, created_at
       FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT 100
     `).all();

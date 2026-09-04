@@ -26,18 +26,25 @@ Requirements: Node.js 22.13 or newer.
 ```powershell
 cd portal
 npm install
-Copy-Item .env.example .dev.vars
-Copy-Item .openai/hosting.example.json .openai/hosting.json
+Copy-Item .env.example .env.local
 ```
 
-Replace `JWT_SECRET` in `.dev.vars` with at least 32 random characters. Do not commit `.dev.vars`; it is ignored by Git.
+Replace `JWT_SECRET` in `.env.local` with at least 32 random characters. Do not commit `.env.local`; it is ignored by Git.
+
+Start the Netlify development environment from the `portal` directory. It runs Next.js together with a local PostgreSQL-compatible database:
 
 ```powershell
-npm run db:migrate:local
-npm run dev
+npx netlify dev
 ```
 
-Open `http://localhost:3000`.
+In a second terminal, apply the checked-in database migration once:
+
+```powershell
+cd portal
+npx netlify database migrations apply
+```
+
+Open the local URL printed by Netlify CLI. For frontend-only work, `npm run dev` also starts Next.js, but database-backed sign-in requires `netlify dev` or a valid `NETLIFY_DB_URL`.
 
 Demo accounts are created automatically after the migration on the first login. All use password `Admin@123`:
 
@@ -71,9 +78,17 @@ Backend API access through one organization-owned service account does not autom
 
 ## Data model
 
-The demo uses Cloudflare D1, a managed relational SQL database suited to the deployed Worker runtime. The schema contains the requested `users`, `roles`, `permissions`, `user_roles`, `role_permissions`, and `audit_logs` tables, plus `sessions` for revocation and timeout enforcement.
+The portal uses Netlify Database, a managed PostgreSQL database available to the deployed Next.js server runtime. The schema contains `users`, `roles`, `permissions`, `user_roles`, `role_permissions`, and `audit_logs`, plus `sessions` for revocation and timeout enforcement.
 
-The schema source is `portal/db/schema.ts`; generated SQL migrations are in `portal/drizzle`.
+SQL migrations are stored in `portal/netlify/database/migrations` and are applied automatically during Netlify deploys.
+
+## Deploy to Netlify
+
+The repository contains a root `netlify.toml` that selects `portal` as the base directory, runs `npm run build`, and publishes the Next.js output. Connect this GitHub repository to Netlify and deploy the `main` branch; no manual publish-directory override is required.
+
+The database migration generates and stores a random session-signing secret automatically. For centrally managed production secrets, you can override it with a `JWT_SECRET` environment variable containing at least 32 random characters. Add the `ZOHO_*` values from `portal/.env.example` only when enabling live Zoho OAuth.
+
+Netlify detects `@netlify/database`, provisions the database for eligible projects, and applies the checked-in migration during deployment. If the account is not on a credit-based plan, enable one or configure an external PostgreSQL database before using the authenticated features.
 
 ## Production checklist
 
@@ -94,4 +109,4 @@ cd portal
 npm run build
 ```
 
-The production output is a Cloudflare Worker-compatible application with a callable `fetch` entry point.
+The production output is a standard Next.js application supported by Netlify's OpenNext adapter.

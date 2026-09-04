@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { database } from '@/db';
 import type { PortalUser } from './types';
 
 type AuditInput = {
@@ -17,7 +17,7 @@ export function clientIp(request?: Request) {
 }
 
 export async function writeAudit(input: AuditInput) {
-  await env.DB.prepare(`
+  await database.prepare(`
     INSERT INTO audit_logs (user_id, actor_email, action, resource, resource_id, status, details, ip_address)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(

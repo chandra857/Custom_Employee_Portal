@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { database } from '@/db';
 import { clientIp, writeAudit } from './audit';
 import { signJwt, verifyJwt } from './auth-crypto';
 import type { PortalUser } from './types';
@@ -28,9 +28,16 @@ type UserRow = {
   permissions: string | null;
 };
 
-function secret() {
-  if (!env.JWT_SECRET || env.JWT_SECRET.length < 32) throw new Error('JWT_SECRET must contain at least 32 characters.');
-  return env.JWT_SECRET;
+async function secret() {
+  const value = process.env.JWT_SECRET;
+  if (value) {
+    if (value.length < 32) throw new Error('JWT_SECRET must contain at least 32 characters.');
+    return value;
+  }
+
+  const generated = await database.prepare("SELECT value FROM app_settings WHERE key = 'jwt_secret'").first<{ value: string }>();
+  if (!generated?.value) throw new Error('The portal session secret is unavailable. Apply the database migrations or set JWT_SECRET.');
+  return generated.value;
 }
 
 function cookieValue(request: Request, name: string) {
@@ -51,10 +58,10 @@ function mapUser(row: UserRow): PortalUser {
 }
 
 export async function findUserWithAccess(where: 'id' | 'email', value: number | string) {
-  const row = await env.DB.prepare(`
+  const row = await database.prepare(`
     SELECT u.id, u.email, u.full_name, u.department, u.is_active,
-      GROUP_CONCAT(DISTINCT r.slug) AS roles,
-      GROUP_CONCAT(DISTINCT p.key) AS permissions
+      STRING_AGG(DISTINCT r.slug, ',') AS roles,
+      STRING_AGG(DISTINCT p.key, ',') AS permissions
     FROM users u
     LEFT JOIN user_roles ur ON ur.user_id = u.id
     LEFT JOIN roles r ON r.id = ur.role_id
@@ -81,8 +88,8 @@ export async function createSession(request: Request, user: PortalUser, remember
     exp: expiresAt,
     jti: sessionId,
   };
-  const token = await signJwt(payload, secret());
-  await env.DB.prepare(`
+  const token = await signJwt(payload, await secret());
+  await database.prepare(`
     INSERT INTO sessions (id, user_id, expires_at, last_seen_at, ip_address, user_agent)
     VALUES (?, ?, ?, ?, ?, ?)
   `).bind(sessionId, user.id, expiresAt, now, clientIp(request), request.headers.get('user-agent')).run();
@@ -104,17 +111,17 @@ export async function authenticateRequest(request: Request, permission?: string)
   const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : cookieValue(request, COOKIE_NAME);
   if (!token) throw new Response('Authentication required.', { status: 401 });
 
-  const payload = await verifyJwt<JwtPayload>(token, secret());
+  const payload = await verifyJwt<JwtPayload>(token, await secret());
   const now = Math.floor(Date.now() / 1000);
   if (!payload || payload.exp <= now) throw new Response('Session expired.', { status: 401 });
 
-  const session = await env.DB.prepare('SELECT id, revoked_at, expires_at FROM sessions WHERE id = ? AND user_id = ?').bind(payload.jti, payload.sub).first<{ id: string; revoked_at: number | null; expires_at: number }>();
+  const session = await database.prepare('SELECT id, revoked_at, expires_at FROM sessions WHERE id = ? AND user_id = ?').bind(payload.jti, payload.sub).first<{ id: string; revoked_at: number | null; expires_at: number }>();
   if (!session || session.revoked_at || session.expires_at <= now) throw new Response('Session is no longer active.', { status: 401 });
 
   const result = await findUserWithAccess('id', payload.sub);
   if (!result || !result.row.is_active) throw new Response('Account is inactive.', { status: 403 });
 
-  await env.DB.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?').bind(now, payload.jti).run();
+  await database.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?').bind(now, payload.jti).run();
   if (permission && !result.user.permissions.includes(permission)) {
     await writeAudit({ user: result.user, action: 'permission.denied', resource: permission, status: 'denied', request });
     throw new Response('You do not have permission for this action.', { status: 403 });
@@ -125,8 +132,8 @@ export async function authenticateRequest(request: Request, permission?: string)
 export async function revokeCurrentSession(request: Request) {
   const token = cookieValue(request, COOKIE_NAME);
   if (token) {
-    const payload = await verifyJwt<JwtPayload>(token, secret());
-    if (payload) await env.DB.prepare('UPDATE sessions SET revoked_at = unixepoch() WHERE id = ?').bind(payload.jti).run();
+    const payload = await verifyJwt<JwtPayload>(token, await secret());
+    if (payload) await database.prepare('UPDATE sessions SET revoked_at = EXTRACT(EPOCH FROM NOW())::integer WHERE id = ?').bind(payload.jti).run();
   }
   const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
   return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict${secure}; Max-Age=0`;
